@@ -252,11 +252,11 @@ contract MultiLRTHook is BaseHook {
      */
     function _afterSwap(
         address,
-        PoolKey calldata key,
-        IPoolManager.SwapParams calldata,
-        BalanceDelta,
-        bytes calldata
-    ) internal override returns (bytes4, int128) {
+        PoolKey calldata /* key */,
+        IPoolManager.SwapParams calldata /* params */,
+        BalanceDelta /* delta */,
+        bytes calldata /* hookData */
+    ) internal pure override returns (bytes4, int128) {
         return (BaseHook.afterSwap.selector, 0);
     }
 } 

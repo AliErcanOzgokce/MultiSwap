@@ -88,7 +88,7 @@ contract CounterHookTest is Test {
         token1.approve(address(poolManager), type(uint256).max);
     }
 
-    function test_CounterHookDeployment() public {
+    function test_CounterHookDeployment() public view {
         assertTrue(address(hook) != address(0), "Hook was not deployed");
 
         // Verify hook permissions

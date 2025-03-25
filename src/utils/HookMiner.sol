@@ -25,7 +25,7 @@ library HookMiner {
         uint160 flags,
         bytes memory creationCode,
         bytes memory constructorArgs
-    ) internal view returns (address hookAddress, bytes32 salt) {
+    ) internal pure returns (address hookAddress, bytes32 salt) {
         // Only use the bottom bits corresponding to the flag mask
         flags = flags & FLAG_MASK;
         

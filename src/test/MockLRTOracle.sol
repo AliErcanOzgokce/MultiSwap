@@ -48,7 +48,7 @@ contract MockLRTOracle is ILRTOracle {
      * @return success Whether the update was successful
      * @return rate The updated exchange rate (scaled by 1e18)
      */
-    function updateLRTRate(address lrt) external override returns (bool success, uint256 rate) {
+    function updateLRTRate(address lrt) external view override returns (bool success, uint256 rate) {
         // In this mock implementation, we're just returning the existing rate
         // In a real implementation, this would fetch the rate from an external source
         return (rates[lrt] > 0, rates[lrt]);

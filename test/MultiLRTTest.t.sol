@@ -205,7 +205,7 @@ contract MultiLRTTest is Test {
         poolManager.initialize(poolKey, uint160(TickMath.getSqrtPriceAtTick(0)));
     }
     
-    function test_HookDeployment() public {
+    function test_HookDeployment() public view {
         assertTrue(address(hook) != address(0), "Hook not deployed");
         assertEq(hook.owner(), address(basketToken), "Hook owner incorrect");
     }

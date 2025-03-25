@@ -21,8 +21,8 @@ contract MultiLRTFactory {
 
     /// @notice Creates the MultiLRTHook with the correct address prefix for Uniswap v4
     /// @param _poolManager The address of the Uniswap v4 PoolManager
-    /// @param _salt The salt to use for address generation (can be adjusted to find a valid hook address)
-    function deploy(address _poolManager, bytes32 _salt) external returns (address) {
+    /// @return The address of the deployed hook
+    function deploy(address _poolManager, bytes32 /* _salt */) external returns (address) {
         // Calculate the address prefix needed for the hook
         uint160 flags = uint160(Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG);
 
