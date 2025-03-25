@@ -1,5 +1,6 @@
 // UPDATED: Added Core Functionality
 // UPDATED: Added Uniswap v4 hook integration
+// UPDATED: Added transferOwnership function
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
