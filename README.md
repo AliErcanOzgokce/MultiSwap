@@ -1,66 +1,64 @@
-## Foundry
+# MultiSwap LRT Pool for Uniswap v4
 
-**Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
+This project implements a custom Uniswap v4 hook that enables efficient swaps between various Liquid Restaking Tokens (LRTs) like stETH, rETH, and cbETH. The implementation is inspired by Sanctum's approach on Solana.
 
-Foundry consists of:
+## Key Features
 
--   **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
--   **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
--   **Anvil**: Local Ethereum node, akin to Ganache, Hardhat Network.
--   **Chisel**: Fast, utilitarian, and verbose solidity REPL.
+- **Direct LRT-to-LRT Swaps**: Swap directly between different LRTs with minimal slippage
+- **Underlying-Aware Pricing**: Custom pricing based on the underlying ETH value of each LRT
+- **Constant-Sum Curve**: Utilizes a constant-sum AMM model optimized for tokens with similar values
+- **Custom Fee Structure**: Configurable fee rates per pool
 
-## Documentation
+## Project Structure
 
-https://book.getfoundry.sh/
+- `src/hooks/MultiLRTHook.sol`: Main hook implementation that manages cross-LRT swaps
+- `src/utils/HookMiner.sol`: Utility for computing valid hook addresses with specific flags
+- `test/`: Test files for the contracts
+- `script/DeployMultiLRT.s.sol`: Deployment script
 
-## Usage
+## How It Works
 
-### Build
+1. **LRT Rate Management**: Each LRT has an exchange rate to ETH that is updated periodically
+2. **Constant-Sum Swaps**: Swaps price tokens based on their underlying ETH value
+3. **Reserve Management**: The hook maintains reserves of each LRT to facilitate swaps
+4. **Fee Collection**: Charges small fees on swaps that can be collected by the owner
 
-```shell
-$ forge build
+## Uniswap v4 Integration
+
+This project is built on Uniswap v4 and uses the hook system to customize the swap behavior. The hooks intercept swap calls and apply custom logic for LRT-to-LRT swaps.
+
+## Testing
+
+The project includes a comprehensive test suite. To run the tests:
+
+```bash
+forge test
 ```
 
-### Test
+## Deployment
 
-```shell
-$ forge test
+1. Set the private key in your environment:
+
+```bash
+export PRIVATE_KEY=your_private_key
 ```
 
-### Format
+2. Run the deployment script:
 
-```shell
-$ forge fmt
+```bash
+forge script script/DeployMultiLRT.s.sol --rpc-url <your-rpc-url> --broadcast
 ```
 
-### Gas Snapshots
+## Development
 
-```shell
-$ forge snapshot
+This project is built with [Foundry](https://book.getfoundry.sh/). To set up your local environment:
+
+```bash
+git clone https://github.com/AliErcanOzgokce/MultiSwap.git
+cd MultiSwap
+forge install
 ```
 
-### Anvil
+## License
 
-```shell
-$ anvil
-```
-
-### Deploy
-
-```shell
-$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
-```
-
-### Cast
-
-```shell
-$ cast <subcommand>
-```
-
-### Help
-
-```shell
-$ forge --help
-$ anvil --help
-$ cast --help
-```
+This project is licensed under MIT.
