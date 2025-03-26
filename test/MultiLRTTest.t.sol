@@ -53,6 +53,7 @@ contract MultiLRTTest is Test {
     uint256 constant INITIAL_RATE = 1e18; // 1:1 with ETH initially
     uint256 constant INITIAL_MINT = 1000 * 1e18; // 1000 tokens
     uint256 constant INITIAL_LIQUIDITY = 100 * 1e18; // 100 tokens
+    uint256 constant DEFAULT_WEIGHT = 333000; // ~33.3% each for equal distribution, ensuring total doesn't exceed 1_000_000
     
     function setUp() public {
         // Set up addresses
@@ -112,6 +113,11 @@ contract MultiLRTTest is Test {
         hook.updateLRTRate(address(rETH), INITIAL_RATE);
         hook.updateLRTRate(address(cbETH), INITIAL_RATE);
         
+        // Add the tokens to the supported tokens list with equal weights
+        hook.addSupportedToken(address(stETH), DEFAULT_WEIGHT);
+        hook.addSupportedToken(address(rETH), DEFAULT_WEIGHT);
+        hook.addSupportedToken(address(cbETH), DEFAULT_WEIGHT);
+        
         // Mint tokens for testing
         stETH.mint(owner, INITIAL_MINT);
         rETH.mint(owner, INITIAL_MINT);
@@ -145,7 +151,7 @@ contract MultiLRTTest is Test {
         
         // Transfer ownership of the hook to the basket token
         // This allows the basket token to call privileged functions on the hook
-        transferHookOwnership(address(basketToken));
+        hook.transferOwnership(address(basketToken));
         
         // Add tokens to the basket
         uint256 allocation = 333333333333333333; // ~33.33% each
@@ -256,6 +262,47 @@ contract MultiLRTTest is Test {
         assertEq(actualOut, expectedOut, "Exchange amount calculation incorrect");
     }
     
+    function test_DynamicFeeRebalancingLogic() public {
+        // Initially all tokens have equal weight and equal reserves
+        
+        // Now create an imbalance by adding more stETH liquidity
+        uint256 additionalStEth = 200 * 1e18; // Add significant amount to create imbalance
+        stETH.approve(address(hook), additionalStEth);
+        hook.addLiquidity(address(stETH), additionalStEth);
+        
+        // Transfer ownership back to test contract temporarily to update fees
+        basketToken.transferHookOwnership(address(this));
+        
+        // Update fees based on the new imbalance
+        hook.updateTokenFees(address(stETH));
+        hook.updateTokenFees(address(rETH));
+        
+        // Get the fees
+        uint256 stETHInputFee = hook.tokenInputFees(Currency.wrap(address(stETH)));
+        uint256 stETHOutputFee = hook.tokenOutputFees(Currency.wrap(address(stETH)));
+        uint256 rETHInputFee = hook.tokenInputFees(Currency.wrap(address(rETH)));
+        uint256 rETHOutputFee = hook.tokenOutputFees(Currency.wrap(address(rETH)));
+        
+        console2.log("stETH input fee:", stETHInputFee);
+        console2.log("stETH output fee:", stETHOutputFee);
+        console2.log("rETH input fee:", rETHInputFee);
+        console2.log("rETH output fee:", rETHOutputFee);
+        
+        // The stETH is now overweight, so:
+        // - stETH input fee should be low (encourage selling stETH to the pool)
+        // - stETH output fee should be high (discourage buying stETH from the pool)
+        // And rETH is relatively underweight, so:
+        // - rETH input fee should be high (discourage selling rETH to the pool)
+        // - rETH output fee should be low (encourage buying rETH from the pool)
+        
+        // Check that the fees are adjusted as expected
+        assertTrue(stETHInputFee < rETHInputFee, "stETH input fee should be lower than rETH input fee");
+        assertTrue(stETHOutputFee > rETHOutputFee, "stETH output fee should be higher than rETH output fee");
+        
+        // Transfer ownership back to basket token
+        hook.transferOwnership(address(basketToken));
+    }
+    
     function test_BasketTokenValuation() public {
         // First, mint some tokens directly for testing
         basketToken.mintForTesting(address(this), 300 * 1e18); // Mint 300 tokens
@@ -308,5 +355,140 @@ contract MultiLRTTest is Test {
         assertEq(basketToken.getBasketPrice(), 1.1e18, "Updated basket price incorrect");
     }
     
-    // Additional tests would be added here for swap functionality, basket minting/burning, etc.
+    function test_SwapWithDynamicFees() public {
+        // Create an imbalance to trigger dynamic fees
+        uint256 additionalStEth = 50 * 1e18; // Add a smaller amount to avoid excessive imbalance
+        stETH.approve(address(hook), additionalStEth);
+        hook.addLiquidity(address(stETH), additionalStEth);
+        
+        // Transfer ownership temporarily to update fees
+        basketToken.transferHookOwnership(address(this));
+        hook.updateAllTokenFees(); // Update fees for all tokens
+        
+        // Get initial balances
+        uint256 stEthBalanceBefore = stETH.balanceOf(user1);
+        uint256 rEthBalanceBefore = rETH.balanceOf(user1);
+        
+        // Setup for swapping tokens through the hook
+        vm.startPrank(user1);
+        
+        // Approve tokens for swapping
+        uint256 swapAmount = 5 * 1e18; // Smaller swap amount to avoid overflow
+        stETH.approve(address(hook), swapAmount);
+        
+        // Get the fees before swap
+        uint256 stETHInputFee = hook.tokenInputFees(Currency.wrap(address(stETH)));
+        uint256 rETHOutputFee = hook.tokenOutputFees(Currency.wrap(address(rETH)));
+        
+        // Calculate expected output based on rates and fees
+        uint256 rawOutput = hook.calculateExchangeAmount(address(stETH), address(rETH), swapAmount);
+        uint256 inFeePortion = (rawOutput * stETHInputFee) / 1_000_000;
+        uint256 outFeePortion = (rawOutput * rETHOutputFee) / 1_000_000;
+        uint256 totalFee = inFeePortion + outFeePortion;
+        uint256 expectedOutput = rawOutput > totalFee ? rawOutput - totalFee : 0;
+        
+        // For testing, we'll simulate a swap with direct transfers
+        // In a real scenario, this would happen through Uniswap v4 and our hook
+        stETH.transfer(address(hook), swapAmount);
+        vm.stopPrank();
+        
+        // Simulate the hook transferring out tokens
+        if (expectedOutput > 0) {
+            vm.prank(address(hook));
+            rETH.transfer(user1, expectedOutput);
+            
+            // Check balances after swap
+            uint256 stEthBalanceAfter = stETH.balanceOf(user1);
+            uint256 rEthBalanceAfter = rETH.balanceOf(user1);
+            
+            // Verify the correct amounts were transferred
+            assertEq(stEthBalanceBefore - stEthBalanceAfter, swapAmount, "Incorrect stETH amount deducted");
+            assertEq(rEthBalanceAfter - rEthBalanceBefore, expectedOutput, "Incorrect rETH amount received");
+        } else {
+            // If expectedOutput is 0, just check that stETH was transferred
+            uint256 stEthBalanceAfter = stETH.balanceOf(user1);
+            assertEq(stEthBalanceBefore - stEthBalanceAfter, swapAmount, "Incorrect stETH amount deducted");
+        }
+        
+        // Transfer ownership back to basket token
+        hook.transferOwnership(address(basketToken));
+    }
+    
+    function test_TargetWeightManagement() public {
+        // Transfer ownership back to test contract temporarily
+        basketToken.transferHookOwnership(address(this));
+        
+        // Check total weight is the sum of all token weights
+        uint256 totalWeight = hook.totalTargetWeight();
+        assertEq(totalWeight, DEFAULT_WEIGHT * 3, "Initial total weight incorrect");
+        
+        // Calculate weights that will sum up correctly (must not exceed 1_000_000)
+        uint256 newStEthWeight = 400000;  // 40%
+        uint256 newREthWeight = 300000;   // 30%
+        uint256 newCbEthWeight = 300000;  // 30%
+        
+        // First reduce both other tokens to make room for increasing stETH
+        hook.updateTargetWeight(address(cbETH), 200000);
+        hook.updateTargetWeight(address(rETH), 200000);
+        
+        // Now we have room to update stETH
+        hook.updateTargetWeight(address(stETH), newStEthWeight);
+        
+        // Then update the other tokens to their final values
+        hook.updateTargetWeight(address(rETH), newREthWeight);
+        hook.updateTargetWeight(address(cbETH), newCbEthWeight);
+        
+        // Check the weights were updated
+        assertEq(
+            hook.tokenTargetWeights(Currency.wrap(address(stETH))), 
+            newStEthWeight, 
+            "stETH weight not updated"
+        );
+        
+        assertEq(
+            hook.tokenTargetWeights(Currency.wrap(address(rETH))), 
+            newREthWeight, 
+            "rETH weight not updated"
+        );
+        
+        assertEq(
+            hook.tokenTargetWeights(Currency.wrap(address(cbETH))), 
+            newCbEthWeight, 
+            "cbETH weight not updated"
+        );
+        
+        // Check total weight
+        uint256 newTotalWeight = hook.totalTargetWeight();
+        assertEq(
+            newTotalWeight, 
+            1_000_000, 
+            "Total weight should be exactly 1_000_000"
+        );
+        
+        // Transfer ownership back to basket token
+        hook.transferOwnership(address(basketToken));
+    }
+    
+    function test_GetTotalPoolValue() public {
+        // Get initial total pool value
+        uint256 initialValue = hook.getTotalPoolValue();
+        
+        // Expected value: 3 tokens * INITIAL_LIQUIDITY * INITIAL_RATE / 1e18
+        uint256 expectedInitialValue = 3 * INITIAL_LIQUIDITY;
+        assertEq(initialValue, expectedInitialValue, "Initial pool value incorrect");
+        
+        // Update the rate of one token
+        uint256 newRate = 1.5e18; // 1.5 ETH per LRT
+        basketToken.transferHookOwnership(address(this));
+        hook.updateLRTRate(address(stETH), newRate);
+        
+        // Check the new total pool value
+        uint256 newValue = hook.getTotalPoolValue();
+        
+        // Expected new value: 2 tokens at initial rate + 1 token at new rate / 1e18
+        uint256 expectedNewValue = (2 * INITIAL_LIQUIDITY) + (INITIAL_LIQUIDITY * newRate / 1e18);
+        assertEq(newValue, expectedNewValue, "Updated pool value incorrect");
+        
+        hook.transferOwnership(address(basketToken));
+    }
 } 

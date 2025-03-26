@@ -86,6 +86,14 @@ contract MultiLRTBasketToken is ERC20 {
     }
     
     /**
+     * @notice Transfers ownership of the hook to a new address
+     * @param newOwner The new owner address
+     */
+    function transferHookOwnership(address newOwner) external onlyAdmin {
+        hook.transferOwnership(newOwner);
+    }
+    
+    /**
      * @notice Adds a token to the basket
      * @param token The token to add
      * @param allocation The target allocation percentage (scaled by 1e18)

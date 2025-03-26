@@ -1,6 +1,7 @@
 // UPDATED: Added Core Functionality
 // UPDATED: Added Uniswap v4 hook integration
 // UPDATED: Added transferOwnership function
+// UPDATED: Added dynamic fee structure for pool rebalancing
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
@@ -24,6 +25,8 @@ import {BeforeSwapDelta, BeforeSwapDeltaLibrary, toBeforeSwapDelta} from "v4-cor
  * 1. Direct swaps between different LRTs with minimal slippage
  * 2. Custom pricing curves for LRT-to-LRT swaps based on their underlying value
  * 3. Fee collection on swaps to provide yield to liquidity providers
+ * 4. Dynamic fee structure to encourage pool rebalancing
+ * 5. Unified liquidity layer for all LRTs (similar to Sanctum Infinity)
  */
 contract MultiLRTHook is BaseHook {
     using CurrencyLibrary for Currency;
@@ -35,6 +38,12 @@ contract MultiLRTHook is BaseHook {
     
     /// @notice Default swap fee (0.1%)
     uint256 constant DEFAULT_SWAP_FEE = 1000;
+
+    /// @notice Maximum fee that can be set (2%)
+    uint256 constant MAX_FEE = 20000;
+    
+    /// @notice Target weight denominator (1e6 = 100%)
+    uint256 constant WEIGHT_DENOMINATOR = 1_000_000;
 
     /// @notice Mapping of LRT to its underlying ETH price (rate)
     mapping(Currency currency => uint256 rate) public lrtRates;
@@ -48,8 +57,32 @@ contract MultiLRTHook is BaseHook {
     /// @notice LRT reserves held by this contract for the constant-sum curve
     mapping(Currency currency => uint256 reserves) public lrtReserves;
     
+    /// @notice Input fee per token (fee applied when token is sold)
+    mapping(Currency currency => uint256 inputFee) public tokenInputFees;
+    
+    /// @notice Output fee per token (fee applied when token is bought)
+    mapping(Currency currency => uint256 outputFee) public tokenOutputFees;
+    
+    /// @notice Target weight for each token in the pool
+    mapping(Currency currency => uint256 targetWeight) public tokenTargetWeights;
+    
+    /// @notice List of all supported tokens
+    Currency[] public supportedTokens;
+    
+    /// @notice Total target weight of all tokens (should sum to WEIGHT_DENOMINATOR)
+    uint256 public totalTargetWeight;
+    
     /// @notice The address that can update LRT rates and withdraw fees
     address public owner;
+
+    /// @notice Event emitted when a token is added to the supported list
+    event TokenAdded(address indexed token, uint256 targetWeight);
+    
+    /// @notice Event emitted when target weights are updated
+    event TargetWeightUpdated(address indexed token, uint256 weight);
+    
+    /// @notice Event emitted when fees are updated
+    event TokenFeesUpdated(address indexed token, uint256 inputFee, uint256 outputFee);
     
     /// @notice Event emitted when an LRT rate is updated
     event RateUpdated(address indexed lrt, uint256 rate);
@@ -63,8 +96,12 @@ contract MultiLRTHook is BaseHook {
         address indexed toToken, 
         uint256 amountIn, 
         uint256 amountOut,
-        uint256 fee
+        uint256 inputFee,
+        uint256 outputFee
     );
+    
+    /// @notice Event emitted when a pool is rebalanced
+    event PoolRebalanced(address indexed token, uint256 currentWeight, uint256 targetWeight);
 
     constructor(IPoolManager _poolManager) BaseHook(_poolManager) {
         owner = msg.sender;
@@ -88,6 +125,54 @@ contract MultiLRTHook is BaseHook {
             afterAddLiquidityReturnDelta: false,
             afterRemoveLiquidityReturnDelta: false
         });
+    }
+
+    /**
+     * @notice Add a new token to the supported tokens list
+     * @param token The token address
+     * @param weight The target weight of the token (scaled by WEIGHT_DENOMINATOR)
+     */
+    function addSupportedToken(address token, uint256 weight) external {
+        require(msg.sender == owner, "Only owner");
+        require(weight > 0, "Weight must be positive");
+        require(tokenTargetWeights[Currency.wrap(token)] == 0, "Token already supported");
+        
+        Currency currency = Currency.wrap(token);
+        supportedTokens.push(currency);
+        tokenTargetWeights[currency] = weight;
+        totalTargetWeight += weight;
+        
+        require(totalTargetWeight <= WEIGHT_DENOMINATOR, "Total weight exceeds denominator");
+        
+        // Set default fees
+        tokenInputFees[currency] = DEFAULT_SWAP_FEE;
+        tokenOutputFees[currency] = DEFAULT_SWAP_FEE;
+        
+        emit TokenAdded(token, weight);
+    }
+
+    /**
+     * @notice Updates the target weight for a token
+     * @param token The token address
+     * @param newWeight The new target weight
+     */
+    function updateTargetWeight(address token, uint256 newWeight) external {
+        require(msg.sender == owner, "Only owner");
+        require(newWeight > 0, "Weight must be positive");
+        
+        Currency currency = Currency.wrap(token);
+        require(tokenTargetWeights[currency] > 0, "Token not supported");
+        
+        // Update total weight
+        totalTargetWeight = totalTargetWeight - tokenTargetWeights[currency] + newWeight;
+        require(totalTargetWeight <= WEIGHT_DENOMINATOR, "Total weight exceeds denominator");
+        
+        tokenTargetWeights[currency] = newWeight;
+        
+        emit TargetWeightUpdated(token, newWeight);
+        
+        // Automatically update fees based on new weights
+        updateTokenFees(token);
     }
 
     /**
@@ -120,6 +205,115 @@ contract MultiLRTHook is BaseHook {
         require(msg.sender == owner, "Only owner");
         require(newFeeRate <= FEE_DENOMINATOR, "Fee too high");
         poolFeeRates[key.toId()] = newFeeRate;
+    }
+    
+    /**
+     * @notice Manually sets input and output fees for a token
+     * @param token The token address
+     * @param newInputFee The new input fee
+     * @param newOutputFee The new output fee
+     */
+    function setTokenFees(address token, uint256 newInputFee, uint256 newOutputFee) external {
+        require(msg.sender == owner, "Only owner");
+        require(newInputFee <= MAX_FEE && newOutputFee <= MAX_FEE, "Fee too high");
+        
+        Currency currency = Currency.wrap(token);
+        tokenInputFees[currency] = newInputFee;
+        tokenOutputFees[currency] = newOutputFee;
+        
+        emit TokenFeesUpdated(token, newInputFee, newOutputFee);
+    }
+    
+    /**
+     * @notice Automatically update fees based on current reserves vs. target weights
+     * @param token The token to update fees for
+     */
+    function updateTokenFees(address token) public {
+        require(msg.sender == owner, "Only owner");
+        
+        Currency currency = Currency.wrap(token);
+        require(tokenTargetWeights[currency] > 0, "Token not supported");
+        
+        // Calculate the current token value in ETH (with proper scaling)
+        uint256 tokenValue = (lrtReserves[currency] * lrtRates[currency]) / 1e18;
+        
+        // Get total pool value in ETH
+        uint256 totalPoolValue = getTotalPoolValue();
+        
+        if (totalPoolValue == 0) {
+            // If pool is empty, set default fees
+            tokenInputFees[currency] = DEFAULT_SWAP_FEE;
+            tokenOutputFees[currency] = DEFAULT_SWAP_FEE;
+            return;
+        }
+        
+        // Calculate current weight
+        uint256 currentWeight = (tokenValue * WEIGHT_DENOMINATOR) / totalPoolValue;
+        
+        // Get target weight
+        uint256 targetWeight = tokenTargetWeights[currency];
+        
+        // Determine the deviation from target
+        uint256 deviation;
+        bool isOverweight;
+        
+        if (currentWeight > targetWeight) {
+            deviation = currentWeight - targetWeight;
+            isOverweight = true;
+        } else {
+            deviation = targetWeight - currentWeight;
+            isOverweight = false;
+        }
+        
+        // Normalize deviation to determine fee adjustment (max 10x the default fee)
+        // Prevent overflow by safely calculating the deviation percentage
+        uint256 deviationPercent = targetWeight > 0 ? (deviation * 100) / targetWeight : 0;
+        uint256 feeAdjustment = (deviationPercent * DEFAULT_SWAP_FEE) / 100;
+        feeAdjustment = feeAdjustment > MAX_FEE ? MAX_FEE : feeAdjustment;
+        
+        if (isOverweight) {
+            // Token is overweight in the pool
+            // Lower input fee (encourage more inflow)
+            // Raise output fee (discourage outflow)
+            tokenInputFees[currency] = DEFAULT_SWAP_FEE > feeAdjustment ? DEFAULT_SWAP_FEE - feeAdjustment : 0;
+            tokenOutputFees[currency] = DEFAULT_SWAP_FEE + feeAdjustment;
+        } else {
+            // Token is underweight in the pool
+            // Raise input fee (discourage more outflow)
+            // Lower output fee (encourage inflow)
+            tokenInputFees[currency] = DEFAULT_SWAP_FEE + feeAdjustment;
+            tokenOutputFees[currency] = DEFAULT_SWAP_FEE > feeAdjustment ? DEFAULT_SWAP_FEE - feeAdjustment : 0;
+        }
+        
+        // Ensure fees don't exceed maximum
+        tokenInputFees[currency] = tokenInputFees[currency] > MAX_FEE ? MAX_FEE : tokenInputFees[currency];
+        tokenOutputFees[currency] = tokenOutputFees[currency] > MAX_FEE ? MAX_FEE : tokenOutputFees[currency];
+        
+        emit TokenFeesUpdated(token, tokenInputFees[currency], tokenOutputFees[currency]);
+        emit PoolRebalanced(token, currentWeight, targetWeight);
+    }
+    
+    /**
+     * @notice Update fees for all tokens in one transaction
+     */
+    function updateAllTokenFees() external {
+        require(msg.sender == owner, "Only owner");
+        
+        for (uint i = 0; i < supportedTokens.length; i++) {
+            Currency currency = supportedTokens[i];
+            updateTokenFees(Currency.unwrap(currency));
+        }
+    }
+    
+    /**
+     * @notice Calculate the total pool value in ETH terms
+     * @return totalValue The total value of all tokens in the pool in ETH terms
+     */
+    function getTotalPoolValue() public view returns (uint256 totalValue) {
+        for (uint i = 0; i < supportedTokens.length; i++) {
+            Currency currency = supportedTokens[i];
+            totalValue += (lrtReserves[currency] * lrtRates[currency]) / 1e18;
+        }
     }
     
     /**
@@ -182,8 +376,36 @@ contract MultiLRTHook is BaseHook {
     }
     
     /**
+     * @notice Calculate the total fee for a swap
+     * @param fromToken The token being sold
+     * @param toToken The token being bought
+     * @param amountOut The output amount (before fees)
+     * @return fee The total fee amount in output token
+     */
+    function calculateSwapFee(
+        address fromToken,
+        address toToken,
+        uint256 /* amountIn */,
+        uint256 amountOut
+    ) public view returns (uint256 fee) {
+        Currency fromCurrency = Currency.wrap(fromToken);
+        Currency toCurrency = Currency.wrap(toToken);
+        
+        // Get input and output fees
+        uint256 inFee = tokenInputFees[fromCurrency];
+        uint256 outFee = tokenOutputFees[toCurrency];
+        
+        // Calculate fees (as a portion of the output amount)
+        uint256 inFeePortion = (amountOut * inFee) / FEE_DENOMINATOR;
+        uint256 outFeePortion = (amountOut * outFee) / FEE_DENOMINATOR;
+        
+        // Total fee is the sum of both fees
+        fee = inFeePortion + outFeePortion;
+    }
+    
+    /**
      * @notice Implementation of the beforeSwap hook
-     * @dev This is where we implement our custom curve logic
+     * @dev This is where we implement our custom curve logic with dynamic fees
      */
     function _beforeSwap(
         address,
@@ -221,10 +443,14 @@ contract MultiLRTHook is BaseHook {
         // Ensure we have enough reserves
         require(amountOut <= lrtReserves[Currency.wrap(tokenOut)], "Insufficient reserves");
         
+        // Get the input and output fees
+        Currency inCurrency = Currency.wrap(tokenIn);
+        Currency outCurrency = Currency.wrap(tokenOut);
+        uint256 inFee = tokenInputFees[inCurrency];
+        uint256 outFee = tokenOutputFees[outCurrency];
+        
         // Calculate fee
-        PoolId poolId = key.toId();
-        uint256 feeRate = poolFeeRates[poolId] == 0 ? DEFAULT_SWAP_FEE : poolFeeRates[poolId];
-        uint256 fee = (amountOut * feeRate) / FEE_DENOMINATOR;
+        uint256 fee = calculateSwapFee(tokenIn, tokenOut, amountIn, amountOut);
         uint256 amountOutAfterFee = amountOut - fee;
         
         // Update reserves
@@ -241,7 +467,7 @@ contract MultiLRTHook is BaseHook {
         
         BeforeSwapDelta delta = toBeforeSwapDelta(deltaIn, deltaOut);
         
-        emit MultiLRTSwap(tokenIn, tokenOut, amountIn, amountOutAfterFee, fee);
+        emit MultiLRTSwap(tokenIn, tokenOut, amountIn, amountOutAfterFee, inFee, outFee);
         
         // Return the custom deltas
         return (BaseHook.beforeSwap.selector, delta, 0);

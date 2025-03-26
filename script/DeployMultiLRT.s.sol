@@ -8,6 +8,7 @@ import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 import {CurrencyLibrary, Currency} from "v4-core/src/types/Currency.sol";
 import {PoolId, PoolIdLibrary} from "v4-core/src/types/PoolId.sol";
 import {MultiLRTHook} from "../src/hooks/MultiLRTHook.sol";
+import {MultiLRTBasketToken} from "../src/MultiLRTBasketToken.sol";
 import {Hooks} from "v4-core/src/libraries/Hooks.sol";
 import {HookMiner} from "../src/utils/HookMiner.sol";
 import {MockERC20} from "../test/mocks/MockERC20.sol";
@@ -15,7 +16,8 @@ import {IHooks} from "v4-core/src/interfaces/IHooks.sol";
 
 /**
  * @title DeployMultiLRT
- * @notice Deployment script for the Multi LRT Pool system
+ * @notice Deployment script for the Multi LRT Unified Liquidity Pool system
+ * @dev Deploys a Sanctum Infinity-style unified liquidity layer for LRTs on Ethereum
  */
 contract DeployMultiLRT is Script {
     using CurrencyLibrary for Currency;
@@ -24,11 +26,18 @@ contract DeployMultiLRT is Script {
     // Deployment addresses
     PoolManager public poolManager;
     MultiLRTHook public hook;
+    MultiLRTBasketToken public basketToken;
     
     // Mock tokens for testing
     MockERC20 public stETH;
     MockERC20 public rETH;
     MockERC20 public cbETH;
+    
+    // Constants
+    uint256 constant INITIAL_RATE = 1e18; // 1:1 with ETH initially
+    uint256 constant INITIAL_MINT = 1000 * 1e18; // 1000 tokens
+    uint256 constant INITIAL_LIQUIDITY = 100 * 1e18; // 100 tokens
+    uint256 constant DEFAULT_WEIGHT = 333000; // ~33.3% each for equal distribution, ensuring total doesn't exceed 1_000_000
     
     function setUp() public {}
     
@@ -65,21 +74,59 @@ contract DeployMultiLRT is Script {
         console2.log("cbETH deployed at:", address(cbETH));
         
         // Set initial rates in the hook
-        uint256 initialRate = 1e18; // 1 LRT = 1 ETH
-        hook.updateLRTRate(address(stETH), initialRate);
-        hook.updateLRTRate(address(rETH), initialRate);
-        hook.updateLRTRate(address(cbETH), initialRate);
+        hook.updateLRTRate(address(stETH), INITIAL_RATE);
+        hook.updateLRTRate(address(rETH), INITIAL_RATE);
+        hook.updateLRTRate(address(cbETH), INITIAL_RATE);
+        
+        // Add tokens to the supported list with equal weights initially
+        console2.log("Adding tokens to supported list with equal weights...");
+        hook.addSupportedToken(address(stETH), DEFAULT_WEIGHT);
+        hook.addSupportedToken(address(rETH), DEFAULT_WEIGHT);
+        hook.addSupportedToken(address(cbETH), DEFAULT_WEIGHT);
         
         // Mint some tokens for testing
-        uint256 testAmount = 1000 * 1e18;
-        stETH.mint(msg.sender, testAmount);
-        rETH.mint(msg.sender, testAmount);
-        cbETH.mint(msg.sender, testAmount);
+        stETH.mint(msg.sender, INITIAL_MINT);
+        rETH.mint(msg.sender, INITIAL_MINT);
+        cbETH.mint(msg.sender, INITIAL_MINT);
         
         // Create pairs and initialize pools
         createAndInitializePool(Currency.wrap(address(stETH)), Currency.wrap(address(rETH)));
         createAndInitializePool(Currency.wrap(address(stETH)), Currency.wrap(address(cbETH)));
         createAndInitializePool(Currency.wrap(address(rETH)), Currency.wrap(address(cbETH)));
+        
+        // Deploy the basket token
+        console2.log("Deploying MultiLRTBasketToken...");
+        // Note: In production, you would deploy a real oracle here
+        address oracle = address(0); // Placeholder for now
+        basketToken = new MultiLRTBasketToken(
+            "Multi LRT Basket Token",
+            "mLRT",
+            address(hook),
+            oracle
+        );
+        console2.log("MultiLRTBasketToken deployed at:", address(basketToken));
+        
+        // Transfer hook ownership to the basket token
+        // This allows the basket token to manage the liquidity pool
+        console2.log("Transferring hook ownership to basket token...");
+        hook.transferOwnership(address(basketToken));
+        
+        // Add tokens to the basket
+        console2.log("Adding tokens to basket...");
+        uint256 allocation = 333333333333333333; // ~33.33% each
+        basketToken.addToken(address(stETH), allocation);
+        basketToken.addToken(address(rETH), allocation);
+        basketToken.addToken(address(cbETH), allocation);
+        
+        // Show final deployment summary
+        console2.log("\n=== MultiSwap Deployment Complete ===");
+        console2.log("MultiLRTHook:", address(hook));
+        console2.log("MultiLRTBasketToken:", address(basketToken));
+        console2.log("Supported Tokens:");
+        console2.log("- stETH:", address(stETH));
+        console2.log("- rETH:", address(rETH));
+        console2.log("- cbETH:", address(cbETH));
+        console2.log("==================================\n");
         
         vm.stopBroadcast();
     }
@@ -108,36 +155,5 @@ contract DeployMultiLRT is Script {
         poolManager.initialize(poolKey, uint160(1 << 96));
         
         console2.log("Pool initialized for pair:", Currency.unwrap(currency0), "-", Currency.unwrap(currency1));
-        console2.log("Pool ID:", toHexString(uint256(uint160(address(this)))));
-    }
-
-    function toHexString(uint256 value) internal pure returns (string memory) {
-        if (value == 0) {
-            return "0x0";
-        }
-
-        bytes16 hexSymbols = "0123456789abcdef";
-        uint256 length = 0;
-        uint256 temp = value;
-        
-        while (temp != 0) {
-            length++;
-            temp >>= 4;
-        }
-        
-        bytes memory buffer = new bytes(2 + length);
-        buffer[0] = "0";
-        buffer[1] = "x";
-        
-        for (uint256 i = 2 + length - 1; i >= 2; i--) {
-            buffer[i] = hexSymbols[value & 0xf];
-            value >>= 4;
-        }
-        
-        return string(buffer);
-    }
-
-    function addressToString(address addr) internal pure returns (string memory) {
-        return toHexString(uint256(uint160(addr)));
     }
 } 
