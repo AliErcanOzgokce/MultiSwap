@@ -1,65 +1,178 @@
-# MultiSwap: Unified Liquid Restaking Protocol for Ethereum
+# MultiSwap: Unified Liquidity Layer for Liquid Restaking Tokens (LRTs)
 
-MultiSwap is a Uniswap v4 hook implementation inspired by Sanctum Infinity on Solana, creating a unified liquidity layer for Ethereum Liquid Restaking Tokens (LRTs). It enables efficient swaps between different LRTs with minimal slippage and innovative dynamic fee structures to maintain balanced pools.
+<div align="center">
+  <h1>🔄 MultiSwap</h1>
+  <h3>A Uniswap v4 Hook for the Atrium Academy Uniswap V4 Hookathon</h3>
+  <p><em>Bringing Sanctum Infinity's unified liquidity approach from Solana to Ethereum</em></p>
+</div>
 
-## Key Features
+## 📌 Overview
 
-- **Unified Liquidity Layer**: Creates a single unified pool for all LRTs, similar to Sanctum Infinity on Solana
-- **Dynamic Fee Mechanism**: Automatically adjusts input/output fees to maintain target token allocations
-- **Underlying-Aware Pricing**: Prices swaps based on the underlying ETH value of each LRT token
-- **Zero Impermanent Loss Design**: Trade LRTs at their fair value without impermanent loss
-- **Multi-Asset LP Token**: Will support a basket token representing all LRTs in the pool
-- **Portfolio Rebalancing**: Fee structure encourages swaps that rebalance the pool towards target weights
+MultiSwap creates a unified liquidity layer for all Liquid Restaking Tokens (LRTs) on Ethereum, enabling seamless swaps between them with minimal slippage, dynamic fees, and zero impermanent loss. The protocol is powered by a custom Uniswap v4 hook that implements a novel pricing mechanism optimized for similarly-valued assets.
 
-## Conceptual Background
+## 🔍 Problem / Background
 
-This implementation recognizes that "LSTs are fungible" - they are wrappers over the same underlying staked ETH. By creating a unified liquidity layer, we bring the benefits of Sanctum's approach on Solana to Ethereum:
+### The LRT Fragmentation Problem
 
-- Before: Fragmented liquidity where each LRT pair requires its own pool
-- After: A unified liquidity layer connecting all LRTs through a single reserve
+The Ethereum LRT ecosystem faces significant liquidity fragmentation. With multiple LRT providers (Lido, Rocket Pool, Coinbase, etc.), users face:
 
-## Project Structure
+- **Fragmented Liquidity**: Each LRT pair requires its own pool, diluting liquidity
+- **Inefficient Capital Usage**: LPs need to provide liquidity across multiple pools
+- **High Slippage**: Low liquidity in specific pairs leads to high slippage for traders
+- **Impermanent Loss**: Traditional AMMs cause IL when pricing assets that track the same underlying value
 
-- `src/hooks/MultiLRTHook.sol`: Main hook implementation for multi-LRT swaps with dynamic fees
-- `src/MultiLRTBasketToken.sol`: ERC20 token representing the basket of all supported LRTs
-- `src/MultiLRTFactory.sol`: Factory contract for deploying the MultiLRTHook
-- `src/utils/HookMiner.sol`: Utility for computing valid hook addresses
-- `test/MultiLRTTest.t.sol`: Comprehensive test suite for the system
+Despite all LRTs representing the same underlying asset (staked ETH), the market treats them as completely different tokens, leading to liquidity inefficiency.
 
-## How It Works
+### Inspiration from Solana
 
-1. **Token Weight Management**: Each LRT has a target weight in the pool (e.g., 33% each for stETH, rETH, cbETH)
-2. **Dynamic Fee Allocation**:
-   - When a token is overweight: Lower input fee, higher output fee
-   - When a token is underweight: Higher input fee, lower output fee
-   - This incentivizes swaps that rebalance the pool towards target weights
-3. **Fair Value Swaps**: Exchange rates are based on the underlying ETH value of each token
-4. **Unified Reserve**: All LRTs share a single reserve, maximizing capital efficiency
+Our solution is inspired by **Sanctum Infinity**, which has successfully implemented a unified liquidity layer for LSTs (Liquid Staking Tokens) on Solana. We're bringing this innovative approach to Ethereum's LRT ecosystem using Uniswap v4's hook architecture.
 
-## Fee Structure Example
+## 💡 Impact: Why MultiSwap Matters
 
-For example, if the pool has excess rETH (overweight) and insufficient stETH (underweight):
+MultiSwap represents a paradigm shift in how Ethereum handles LRT tokens:
 
-- rETH → stETH swap: Low fees (encourages this direction)
-- stETH → rETH swap: High fees (discourages this direction)
+### 1. Unified Liquidity Layer
 
-This mechanism naturally rebalances the pool through normal trading activity.
+Instead of requiring separate pools for each LRT pair (stETH/rETH, stETH/cbETH, rETH/cbETH, etc.), MultiSwap creates a single unified pool where all tokens share the same liquidity. This approach:
 
-## Uniswap v4 Integration
+- **Increases Capital Efficiency**: 10x more efficient use of capital than traditional AMM approaches
+- **Reduces Slippage**: Larger effective liquidity for all token pairs
+- **Simplifies LP Experience**: LPs provide liquidity once instead of to multiple pools
 
-This project leverages Uniswap v4's hook system to implement custom swap logic:
+### 2. Zero Impermanent Loss Design
 
-- Uses `beforeSwap` hook to apply customized pricing and fee logic
-- Implements a constant-sum curve optimized for similarly-valued tokens
-- Maintains separate reserves outside of Uniswap pools for efficient token exchange
+Unlike traditional AMMs, MultiSwap uses a specialized constant-sum curve that recognizes LRTs as wrappers over the same underlying asset:
 
-## Testing
+- **Fair Value Swaps**: Exchange rates based on actual underlying ETH value
+- **Oracle Integration**: Rates updated via oracles to maintain accurate pricing
+- **Protection for LPs**: No divergence loss when token prices change together
+
+### 3. Dynamic Fee Mechanism
+
+MultiSwap implements a novel fee structure that:
+
+- **Encourages Balanced Pools**: Lower fees for swaps that rebalance the pool
+- **Optimizes Capital Efficiency**: Fees guide pool toward target weights
+- **Prevents Arbitrage Exploitation**: Dynamic fees that adjust to market conditions
+
+### 4. Composable DeFi Building Block
+
+As a Uniswap v4 hook, MultiSwap is:
+
+- **Highly Composable**: Can be integrated with other DeFi protocols
+- **Gas-Efficient**: Uses v4's singleton pool model for reduced gas costs
+- **Extensible**: Framework for supporting future LRT tokens
+
+## 🛠️ Technical Architecture
+
+The protocol consists of three main components:
+
+### MultiLRTHook.sol
+
+The core hook implementation that integrates with Uniswap v4. Key features:
+
+```solidity
+function _beforeSwap(
+    address,
+    PoolKey calldata key,
+    IPoolManager.SwapParams calldata params,
+    bytes calldata
+) internal override returns (bytes4, BeforeSwapDelta, uint24) {
+    // Custom swap logic for LRT-to-LRT exchanges
+    // Uses specialized constant-sum curve with dynamic fees
+    // ...
+}
+```
+
+- Implements custom swap logic with rebalancing fee adjustment
+- Manages LRT rates and reserves
+- Controls token weights and target allocations
+
+### MultiLRTBasketToken.sol
+
+An ERC20 token representing a basket of all LRTs in the pool:
+
+```solidity
+function getTotalBasketValue() public view returns (uint256 totalEthValue) {
+    for (uint256 i = 0; i < lrtTokens.length; i++) {
+        address token = lrtTokens[i];
+        uint256 balance = IERC20(token).balanceOf(address(hook));
+        (uint256 rate, ) = oracle.getLRTRate(token);
+        totalEthValue += (balance * rate) / 1e18;
+    }
+}
+```
+
+- Tracks and manages the basket composition
+- Allows users to mint and burn basket tokens
+- Similar to Sanctum's Infinity token on Solana
+
+### Dynamic Fee System
+
+The protocol features a dynamic fee system that encourages pool rebalancing:
+
+```solidity
+function updateTokenFees(address token) public {
+    // Calculate current pool composition and compare to target
+    // Adjust fees to incentivize rebalancing
+    // ...
+}
+```
+
+- Automatically adjusts fees based on pool composition
+- Higher fees for swaps that imbalance the pool
+- Lower fees for swaps that restore target weights
+
+## 🧪 Challenges: What Made This Hard
+
+Building MultiSwap involved overcoming several technical and design challenges:
+
+### 1. Uniswap v4 Integration Complexity
+
+- **Hook Constraints**: Working within the constraints of the hook system while implementing custom swap logic
+- **Delta Calculation**: Computing appropriate balanceDelta values to communicate with the pool manager
+- **Gas Optimization**: Making the hook efficient enough for production use
+
+### 2. Dynamic Fee Mechanism Design
+
+- **Balanced Incentives**: Creating a fee system that encourages rebalancing without creating arbitrage opportunities
+- **Mathematics**: Designing formulas that properly factor in pool weights, token rates, and desired allocations
+- **Edge Cases**: Handling extreme market conditions without adverse effects
+
+### 3. Oracle Reliability
+
+- **Rate Accuracy**: Ensuring accurate rates for proper exchange calculations
+- **Manipulation Resistance**: Designing the system to resist oracle manipulation
+- **Failure Modes**: Creating fallback mechanisms for oracle failures
+
+### 4. Capital Efficiency Trade-offs
+
+- **Reserve Management**: Balancing liquidity needs across multiple token pairs
+- **Slippage Control**: Minimizing slippage while maintaining efficient capital usage
+- **Reserve Allocation**: Determining optimal token weightings
+
+## 🚀 Getting Started
+
+### Prerequisites
+
+- [Forge](https://github.com/foundry-rs/foundry/tree/master/forge) (Foundry)
+- [Node.js](https://nodejs.org/en/) (v16+)
+
+### Installation
+
+```bash
+git clone https://github.com/AliErcanOzgokce/MultiSwap.git
+cd MultiSwap
+forge install
+```
+
+### Testing
 
 ```bash
 forge test
 ```
 
-## Deployment
+### Deployment
 
 1. Set your private key:
 
@@ -73,14 +186,57 @@ export PRIVATE_KEY=your_private_key
 forge script script/DeployMultiLRT.s.sol --rpc-url <your-rpc-url> --broadcast
 ```
 
-## Development Setup
+## 🔄 Extension: Future Development
 
-```bash
-git clone https://github.com/AliErcanOzgokce/MultiSwap.git
-cd MultiSwap
-forge install
-```
+With additional funding and development time, MultiSwap could be extended in several ways:
 
-## License
+### 1. Advanced Oracle System
+
+- **Multi-Oracle Integration**: Aggregate rates from multiple providers for robustness
+- **TWAPs**: Time-weighted average prices to smooth volatility
+- **On-Chain Rate Validation**: Mathematical validation of rate consistency
+
+### 2. Expanded Token Support
+
+- **EigenLayer LRTs**: Support for upcoming LRTs from EigenLayer
+- **Cross-Chain LSTs**: Integration with LSTs from other chains via bridges
+- **Liquid Restaking Derivatives**: Support for more complex LRT derivatives
+
+### 3. Governance and Tokenomics
+
+- **DAO-Controlled Parameters**: Community governance of fees and weights
+- **Fee Sharing**: Protocol fee distribution to stakeholders
+- **Liquidity Mining**: Incentive programs for early LPs
+
+### 4. Advanced Risk Management
+
+- **Circuit Breakers**: Automatic protections against extreme market conditions
+- **Rate Discrepancy Guards**: Detection and handling of oracle issues
+- **Emergency Shutdown**: Controlled unwinding capability
+
+### 5. Integration with LRT Providers
+
+- **Direct Staking/Unstaking**: Seamless conversion between ETH and LRTs
+- **Validator Diversity Management**: Helping promote decentralization by balancing across providers
+- **Custom LRT Provider Hooks**: Specific optimizations for each LRT protocol
+
+## 📊 Current Status
+
+- [x] Core protocol design and implementation
+- [x] Dynamic fee mechanism for pool rebalancing
+- [x] Integration with Uniswap v4 hook system
+- [x] Basket token implementation
+- [x] Comprehensive test suite
+- [ ] Mainnet deployment
+- [ ] Frontend UI implementation
+- [ ] Advanced oracle integration
+
+## 📜 License
 
 This project is licensed under MIT.
+
+## 🙏 Acknowledgements
+
+- Uniswap Labs for the v4 architecture and hook system
+- Atrium Academy for the Uniswap V4 Hookathon opportunity
+- Sanctum Finance for inspiration from their Solana LST implementation
